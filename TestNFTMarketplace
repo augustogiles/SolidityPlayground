@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";    
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 
 contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
@@ -17,6 +18,9 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
         uint256 price;
         address owner;
     }
+
+    uint256 public nextID;
+    mapping(uint256 => NFT) public NFTs;
 
     struct Listing {
         address nftContractAddress;
@@ -43,14 +47,12 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
 
     uint256 public nextListingId = 1;
 
-    uint256 public nextID;
-    mapping(uint256 => NFT) public NFTs;
-
-
     /*event NFTListed(uint256 indexed listingId, address indexed seller, address indexed nftContract, uint256 nftId, uint256 price, uint256 deadline);*/
     event NFTSold(uint256 indexed listingId, address indexed seller, address indexed buyer, uint256 price);
 
     event NFTListed(uint256 indexed tokenId, address indexed seller, uint256 price);
+    event NFTMinted(uint256 indexed tokenId, address indexed to, string name, string description, string imageURI);
+    event Transfer(address indexed to, address indexed from,  uint256 id);
     //event Sold(uint256 indexed tokenId, address indexed seller, address indexed buyer, uint256 price);
 
     constructor(uint256 _royaltyPercentage, uint256 _platformFeePercentage, address _royaltyAddress, address _platformFeeAddress) {
@@ -59,10 +61,12 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
         platformFeePercentage = _platformFeePercentage;
         royaltyAddress = _royaltyAddress;
         platformFeeAddress = _platformFeeAddress;
+
+        nextID = 0;
     }
 
 
-    function listNFT(address _nftContractAddress, uint256 _nftId, uint256 price, uint256 _deadline) external{
+    function listNFT(address _nftContractAddress, uint256 _nftId, uint256 price, uint256 _deadline) payable external{
         require(_nft.ownerOf(_nftId) == msg.sender, "Only token owner can list");
         require(!_listings[_nftId].active, "Token already listed");
 
@@ -123,22 +127,5 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
         _listings[tokenId].highestBidder = msg.sender;
         _listings[tokenId].highestBid = msg.value;
     }
-
-
-    ///============
-     // Função para cunhar um novo token NFT
-  function mintNFT(string memory name, string memory description, uint256 price) public returns (uint256) {
-    // Cria um novo token NFT
-    NFT memory newNFT = NFT(nextID, name, description, price, msg.sender);
-
-    // Atualiza as variáveis ​​de estado do contrato
-    nextID++;
-    NFTs[nextID - 1] = newNFT;
-
-    // Retorna o ID do novo token NFT
-    return nextID - 1;
-  }
-
-
 
 }
