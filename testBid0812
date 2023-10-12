@@ -1,0 +1,313 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+import "https://github.com/NomicFoundation/hardhat/blob/main/packages/hardhat-core/console.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/token/ERC721/IERC721.sol";
+import "https://github.com/thirdweb-dev/contracts/blob/ee78bf9df7b7ac8bc8ded1c8ce91c31ef43cf73e/contracts/extension/upgradeable/Ownable.sol";
+import "https://github.com/thirdweb-dev/contracts/blob/ee78bf9df7b7ac8bc8ded1c8ce91c31ef43cf73e/contracts/extension/upgradeable/ReentrancyGuard.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/security/Pausable.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+
+contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
+    struct Listing {
+        address nftContractAddress;
+        uint256[] nftIds;  // Array of NFT IDs in the pack
+        address seller;
+        uint256 price;
+        uint256 deadline;
+        bool isFixedPrice;
+        bool isListed;
+        address highestBidder;
+        uint256 highestBid;
+    }
+
+    struct TokenInfo {
+        uint256 tokenId;
+        string metadataLink;
+    }
+
+    uint256[] public activeListingIds;
+    uint256 public royaltyPercentage;
+    uint256 public platformFeePercentage;
+    address public royaltyAddress;
+    address public platformFeeAddress;
+
+    mapping(uint256 => Listing) public listings;
+    mapping(uint256 => address) public listingOwners;
+
+    uint256 public nextListingId = 1;
+
+    event NFTListed(
+        uint256 indexed listingId,
+        address indexed seller,
+        address indexed nftContract,
+        uint256[] nftIds,
+        uint256 price,
+        uint256 deadline,
+        bool isFixedPrice
+    );
+
+    event NFTSold(
+        uint256 indexed listingId,
+        address indexed seller,
+        address indexed buyer,
+        uint256 price
+    );
+
+
+    event Bid(
+        uint256 nftId,
+        uint256 highestBid,
+        address highestBidder
+    );
+
+    event NFTDelisted(uint256 indexed listingId);
+
+    constructor(
+        uint256 _royaltyPercentage,
+        uint256 _platformFeePercentage,
+        address _royaltyAddress,
+        address _platformFeeAddress
+    ) {
+        require(
+            _royaltyAddress != address(0) && _platformFeeAddress != address(0),
+            "Addresses cannot be zero"
+        );
+        royaltyPercentage = _royaltyPercentage;
+        platformFeePercentage = _platformFeePercentage;
+        royaltyAddress = _royaltyAddress;
+        platformFeeAddress = _platformFeeAddress;
+    }
+
+    function _canSetOwner() internal view virtual override returns (bool) {
+        return true;
+    }
+
+  function listNFT(
+    address _nftContractAddress,
+    uint256[] memory _nftIds,
+    uint256 _price,
+    uint256 _deadline,
+    bool _isFixedPrice
+) external whenNotPaused nonReentrant {
+    console.log("is Fixed price? ", _isFixedPrice);
+    console.log("is price > 0? ", _price > 0);
+    console.log("is Deadline > 0? ", _deadline > 0);
+    console.log("has NFT? ", _nftIds.length > 0);
+    require(_price > 0, "Price must be greater than zero.");
+    require(_deadline > 0, "Deadline must be greater than zero.");
+    require(_nftIds.length > 0, "Must list at least one NFT.");
+    IERC721 nftContract = IERC721(_nftContractAddress);
+    for (uint256 i = 0; i < _nftIds.length; i++) {
+        uint256 _nftId = _nftIds[i];
+        console.log("NFT contract owner: ", nftContract.ownerOf(_nftId));
+        console.log("msg sender:  ", msg.sender);
+        require(
+            nftContract.ownerOf(_nftId) == msg.sender,
+            "You must own the NFT to list it."
+        );
+        // Aprovar este contrato para transferir o NFT em nome do vendedor
+        //nftContract.approve(address(this), _nftId);
+    }
+    listings[nextListingId] = Listing({
+        nftContractAddress: _nftContractAddress,
+        nftIds: _nftIds,
+        seller: msg.sender,
+        price: _price,
+        deadline: block.timestamp + _deadline,
+        isFixedPrice: _isFixedPrice,
+        isListed: true,
+        highestBidder: address(0),
+        highestBid: 0
+    });
+    listingOwners[nextListingId] = msg.sender;
+    
+    if(!_isFixedPrice){
+        listings[nextListingId].highestBidder = msg.sender;
+        listings[nextListingId].highestBid = _price;
+    }
+
+    activeListingIds.push(nextListingId);
+
+    emit NFTListed(
+        nextListingId,
+        msg.sender,
+        _nftContractAddress,
+        _nftIds,
+        _price,
+        block.timestamp + _deadline,
+        _isFixedPrice
+    );
+
+    nextListingId++;
+    
+}
+
+function buyNFT(uint256 _listingId)
+    external
+    payable
+    whenNotPaused
+    nonReentrant
+{
+    require(msg.value > 0, "Sent value must be greater than zero.");
+    Listing storage listing = listings[_listingId];
+    require(listing.seller != address(0), "Listing does not exist.");
+    require(
+        block.timestamp <= listing.deadline,
+        "This listing has expired."
+    );
+    require(
+        msg.value == listing.price,
+        "Sent value must be equal to the listing price."
+    );
+    
+    IERC721 nftContract = IERC721(listing.nftContractAddress);
+    
+    // Check if seller has approved this contract
+    require(
+        nftContract.isApprovedForAll(listing.seller, address(this)),
+        "Seller must approve this contract."
+    );
+
+    uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
+    uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
+    uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
+
+    for (uint256 i = 0; i < listing.nftIds.length; i++) {
+        uint256 _nftId = listing.nftIds[i];
+        nftContract.transferFrom(listing.seller, msg.sender, _nftId);
+    }
+    
+    // Transfer payments
+    payable(listing.seller).transfer(sellerAmount);
+    payable(royaltyAddress).transfer(royaltyAmount);
+    payable(platformFeeAddress).transfer(platformFee);
+    
+    // Emit event after transfers to ensure all went well
+    emit NFTSold(_listingId, listing.seller, msg.sender, listing.price);
+}
+
+
+    function cancelListing(uint256 _listingId) external nonReentrant {
+        require(
+            listingOwners[_listingId] == msg.sender,
+            "Only the listing owner can cancel it."
+        );
+        delete listings[_listingId];
+        delete listingOwners[_listingId];
+        emit NFTDelisted(_listingId);
+    }
+
+    function pause() external onlyOwner nonReentrant {
+        _pause();
+    }
+
+    function unpause() external onlyOwner nonReentrant {
+        _unpause();
+    }
+
+    function updateFeeAddresses(
+        address _newRoyaltyAddress,
+        address _newPlatformFeeAddress
+    ) external onlyOwner nonReentrant {
+        require(
+            _newRoyaltyAddress != address(0) &&
+                _newPlatformFeeAddress != address(0),
+            "Addresses cannot be zero"
+        );
+        royaltyAddress = _newRoyaltyAddress;
+        platformFeeAddress = _newPlatformFeeAddress;
+    }
+
+    function updateFeePercentages(
+        uint256 _newRoyaltyPercentage,
+        uint256 _newPlatformFeePercentage
+    ) external onlyOwner nonReentrant {
+        royaltyPercentage = _newRoyaltyPercentage;
+        platformFeePercentage = _newPlatformFeePercentage;
+    }
+
+    function getAllListingIds() external view returns (uint256[] memory) {
+        return activeListingIds;
+    }
+
+    function getListingInfo(uint256 _listingId)
+        external
+        view
+        returns (TokenInfo[] memory)
+    {
+        Listing storage listing = listings[_listingId];
+        require(listing.seller != address(0), "Listing does not exist.");
+        TokenInfo[] memory tokenInfoArray = new TokenInfo[](
+            listing.nftIds.length
+        );
+        for (uint256 i = 0; i < listing.nftIds.length; i++) {
+            uint256 _nftId = listing.nftIds[i];
+            string memory tokenMetadataLink = "";
+            try
+                IERC721Metadata(listing.nftContractAddress).tokenURI(_nftId)
+            returns (string memory metadataLink) {
+                tokenMetadataLink = metadataLink;
+            } catch {}
+            tokenInfoArray[i] = TokenInfo(_nftId, tokenMetadataLink);
+        }
+        return tokenInfoArray;
+    }
+
+    // Função para dar um lance em um NFT que está em leilão
+    function bid(uint256 nftId) public payable {
+        console.log("isFixed price? ", listings[nftId].isFixedPrice);
+        console.log("is in deadline? ", listings[nftId].deadline > block.timestamp);
+        console.log("is bid higher?  ", msg.value > listings[nftId].price);
+        require(!listings[nftId].isFixedPrice, "Item must have in auction");
+        require(listings[nftId].deadline > block.timestamp, ("Auction deadline has passed"));
+        require(msg.value > listings[nftId].price, "Bid must be higher than the current price");
+
+        // Reembolsar o lance do licitante anterior
+        if (listings[nftId].highestBidder != address(0)) {
+            payable(listings[nftId].highestBidder).transfer(listings[nftId].price);
+        }
+
+        // Atualizar o lance mais alto e o licitante mais alto
+        listings[nftId].price = msg.value;
+        listings[nftId].highestBidder = msg.sender;
+
+        emit Bid(nftId, listings[nftId].price, listings[nftId].highestBidder);
+    }
+
+    // Função para finalizar um leilão
+    function endAuction(uint256 nftId) public {
+        require(listings[nftId].deadline < block.timestamp, "Auction deadline has not passed");
+
+        // Transferir o NFT para o licitante mais alto
+        IERC721 nftContract = IERC721(listings[nftId].nftContractAddress);
+    
+        // Check if seller has approved this contract
+        require(
+            nftContract.isApprovedForAll(listings[nftId].seller, address(this)),
+            "Seller must approve this contract."
+        );
+
+        uint256 royaltyAmount = (listings[nftId].price * royaltyPercentage) / 10000;
+        uint256 platformFee = (listings[nftId].price * platformFeePercentage) / 10000;
+        uint256 sellerAmount = listings[nftId].price - royaltyAmount - platformFee;
+
+        for (uint256 i = 0; i < listings[nftId].nftIds.length; i++) {
+            uint256 _nftId = listings[nftId].nftIds[i];
+            nftContract.transferFrom(listings[nftId].seller, msg.sender, _nftId);
+        }
+        
+        // Transfer payments
+        payable(listingOwners[nftId]).transfer(sellerAmount);
+        payable(royaltyAddress).transfer(royaltyAmount);
+        payable(platformFeeAddress).transfer(platformFee);
+        
+        // Emit event after transfers to ensure all went well
+        emit NFTSold(nftId, listingOwners[nftId], listings[nftId].highestBidder, listings[nftId].highestBid);
+        delete listings[nftId];
+        delete listingOwners[nftId];
+            
+    }
+    
+
+}
