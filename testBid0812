@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.12;
 
-import "https://github.com/NomicFoundation/hardhat/blob/main/packages/hardhat-core/console.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/token/ERC721/IERC721.sol";
 import "https://github.com/thirdweb-dev/contracts/blob/ee78bf9df7b7ac8bc8ded1c8ce91c31ef43cf73e/contracts/extension/upgradeable/Ownable.sol";
 import "https://github.com/thirdweb-dev/contracts/blob/ee78bf9df7b7ac8bc8ded1c8ce91c31ef43cf73e/contracts/extension/upgradeable/ReentrancyGuard.sol";
@@ -36,6 +35,13 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
     mapping(uint256 => address) public listingOwners;
 
     uint256 public nextListingId = 1;
+
+    event debugBid(
+        bool isUnfixedprice,
+        uint256 deadline,
+        uint256 blockTIMESTAMP,
+        address sender
+    );
 
     event NFTListed(
         uint256 indexed listingId,
@@ -90,24 +96,19 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
     uint256 _deadline,
     bool _isFixedPrice
 ) external whenNotPaused nonReentrant {
-    console.log("is Fixed price? ", _isFixedPrice);
-    console.log("is price > 0? ", _price > 0);
-    console.log("is Deadline > 0? ", _deadline > 0);
-    console.log("has NFT? ", _nftIds.length > 0);
     require(_price > 0, "Price must be greater than zero.");
     require(_deadline > 0, "Deadline must be greater than zero.");
     require(_nftIds.length > 0, "Must list at least one NFT.");
     IERC721 nftContract = IERC721(_nftContractAddress);
     for (uint256 i = 0; i < _nftIds.length; i++) {
         uint256 _nftId = _nftIds[i];
-        console.log("NFT contract owner: ", nftContract.ownerOf(_nftId));
-        console.log("msg sender:  ", msg.sender);
+
         require(
             nftContract.ownerOf(_nftId) == msg.sender,
             "You must own the NFT to list it."
         );
         // Aprovar este contrato para transferir o NFT em nome do vendedor
-        //nftContract.approve(address(this), _nftId);
+        nftContract.approve(address(this), _nftId);
     }
     listings[nextListingId] = Listing({
         nftContractAddress: _nftContractAddress,
@@ -121,13 +122,12 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
         highestBid: 0
     });
     listingOwners[nextListingId] = msg.sender;
+    activeListingIds.push(nextListingId);
     
     if(!_isFixedPrice){
         listings[nextListingId].highestBidder = msg.sender;
         listings[nextListingId].highestBid = _price;
     }
-
-    activeListingIds.push(nextListingId);
 
     emit NFTListed(
         nextListingId,
@@ -255,36 +255,43 @@ function buyNFT(uint256 _listingId)
     }
 
     // Função para dar um lance em um NFT que está em leilão
-    function bid(uint256 nftId) public payable {
-        console.log("isFixed price? ", listings[nftId].isFixedPrice);
-        console.log("is in deadline? ", listings[nftId].deadline > block.timestamp);
-        console.log("is bid higher?  ", msg.value > listings[nftId].price);
-        require(!listings[nftId].isFixedPrice, "Item must have in auction");
-        require(listings[nftId].deadline > block.timestamp, ("Auction deadline has passed"));
-        require(msg.value > listings[nftId].price, "Bid must be higher than the current price");
+    function bidNFT(uint256 nftId) external payable {
+        Listing storage listing = listings[nftId];
+        IERC721 nftContract = IERC721(listing.nftContractAddress);
+
+        require(!listing.isFixedPrice, "Item must have in auction");
+        require(block.timestamp <= listing.deadline, "Auction deadline has passed");
+        require(msg.value > listing.price, "Bid must be higher than the current price");
+
+        // Check if seller has approved this contract
+        require(
+            nftContract.isApprovedForAll(listing.seller, address(this)),
+            "Seller must approve this contract."
+        );
 
         // Reembolsar o lance do licitante anterior
-        if (listings[nftId].highestBidder != address(0)) {
-            payable(listings[nftId].highestBidder).transfer(listings[nftId].price);
+        if (listing.highestBidder != address(0)) {
+            payable(listing.highestBidder).transfer(listing.price);
         }
 
         // Atualizar o lance mais alto e o licitante mais alto
-        listings[nftId].price = msg.value;
-        listings[nftId].highestBidder = msg.sender;
+        listing.price = msg.value;
+        listing.highestBidder = msg.sender;
 
-        emit Bid(nftId, listings[nftId].price, listings[nftId].highestBidder);
+        emit Bid(nftId, listing.price, listing.highestBidder);
     }
 
     // Função para finalizar um leilão
     function endAuction(uint256 nftId) public {
-        require(listings[nftId].deadline < block.timestamp, "Auction deadline has not passed");
+        Listing storage listing = listings[nftId];
+        
+        require(listing.deadline < block.timestamp, "Auction deadline has not passed");
 
-        // Transferir o NFT para o licitante mais alto
-        IERC721 nftContract = IERC721(listings[nftId].nftContractAddress);
+        IERC721 nftContract = IERC721(listing.nftContractAddress);
     
         // Check if seller has approved this contract
         require(
-            nftContract.isApprovedForAll(listings[nftId].seller, address(this)),
+            nftContract.isApprovedForAll(listing.seller, address(this)),
             "Seller must approve this contract."
         );
 
