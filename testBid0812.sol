@@ -255,7 +255,7 @@ function buyNFT(uint256 _listingId)
     }
 
     // Função para dar um lance em um NFT que está em leilão
-    function bidNFT(uint256 nftId) external payable {
+    function bidNFT(uint256 nftId) external payable nonReentrant{
         Listing storage listing = listings[nftId];
         IERC721 nftContract = IERC721(listing.nftContractAddress);
 
@@ -282,7 +282,7 @@ function buyNFT(uint256 _listingId)
     }
 
     // Função para finalizar um leilão
-    function endAuction(uint256 nftId) public {
+    function endAuction(uint256 nftId) public nonReentrant{
         Listing storage listing = listings[nftId];
         
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
