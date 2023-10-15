@@ -284,7 +284,8 @@ function buyNFT(uint256 _listingId)
     // Função para finalizar um leilão
     function endAuction(uint256 nftId) public nonReentrant{
         Listing storage listing = listings[nftId];
-        
+        address sellerAddr = listingOwners[nftId]; 
+
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
 
         IERC721 nftContract = IERC721(listing.nftContractAddress);
@@ -309,11 +310,11 @@ function buyNFT(uint256 _listingId)
         payable(royaltyAddress).transfer(royaltyAmount);
         payable(platformFeeAddress).transfer(platformFee);
         
-        // Emit event after transfers to ensure all went well
-        emit NFTSold(nftId, listingOwners[nftId], listings[nftId].highestBidder, listings[nftId].highestBid);
         delete listings[nftId];
         delete listingOwners[nftId];
-            
+
+        // Emit event after transfers to ensure all went well
+        emit NFTSold(nftId, sellerAddr, listing.highestBidder, listing.highestBid);           
     }
     
 
