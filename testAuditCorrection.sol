@@ -313,7 +313,7 @@ function buyNFT(uint256 _listingId)
 
         for (uint256 i = 0; i < listing.nftIds.length; i++) {
             uint256 _nftId = listing.nftIds[i];
-            nftContract.transferFrom(listing.seller, msg.sender, _nftId);
+            nftContract.transferFrom(msg.sender, listing.seller, _nftId);
         }
 
         // Emit event after transfers to ensure all went well
