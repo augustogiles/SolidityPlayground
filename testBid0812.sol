@@ -7,7 +7,8 @@ import "https://github.com/thirdweb-dev/contracts/blob/ee78bf9df7b7ac8bc8ded1c8c
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/security/Pausable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9/contracts/token/ERC721/extensions/IERC721Metadata.sol";
 
-contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
+
+contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     struct Listing {
         address nftContractAddress;
         uint256[] nftIds;  // Array of NFT IDs in the pack
@@ -18,6 +19,11 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
         bool isListed;
         address highestBidder;
         uint256 highestBid;
+    }
+
+    struct OwnerListing {
+        address ownerAddress;
+        Listing[] listings;
     }
 
     struct TokenInfo {
@@ -96,19 +102,28 @@ contract GotasNFTMarketplace is Ownable, ReentrancyGuard, Pausable {
     uint256 _deadline,
     bool _isFixedPrice
 ) external whenNotPaused nonReentrant {
+    console.log("=============BORA=========");
+    console.log(address(this));
+    
     require(_price > 0, "Price must be greater than zero.");
     require(_deadline > 0, "Deadline must be greater than zero.");
     require(_nftIds.length > 0, "Must list at least one NFT.");
     IERC721 nftContract = IERC721(_nftContractAddress);
     for (uint256 i = 0; i < _nftIds.length; i++) {
         uint256 _nftId = _nftIds[i];
-
+        console.log("=============BORAA========= ", i);
         require(
             nftContract.ownerOf(_nftId) == msg.sender,
             "You must own the NFT to list it."
         );
+
+        require(
+            nftContract.isApprovedForAll(msg.sender, address(this)),
+            "NFT must be approved to market"
+        );
+        
         // Aprovar este contrato para transferir o NFT em nome do vendedor
-        nftContract.approve(address(this), _nftId);
+        //nftContract.approve(address(this), _nftId);
     }
     listings[nextListingId] = Listing({
         nftContractAddress: _nftContractAddress,
@@ -152,6 +167,7 @@ function buyNFT(uint256 _listingId)
     require(msg.value > 0, "Sent value must be greater than zero.");
     Listing storage listing = listings[_listingId];
     require(listing.seller != address(0), "Listing does not exist.");
+    require(listing.isFixedPrice, "This item is in auction.");
     require(
         block.timestamp <= listing.deadline,
         "This listing has expired."
@@ -255,11 +271,19 @@ function buyNFT(uint256 _listingId)
     }
 
     // Função para dar um lance em um NFT que está em leilão
-    function bidNFT(uint256 nftId) external payable nonReentrant{
-        Listing storage listing = listings[nftId];
+    function bidNFT(uint256 _listingId) external payable nonReentrant{
+        Listing storage listing = listings[_listingId];
+        console.log("==========  BID ==========");
         IERC721 nftContract = IERC721(listing.nftContractAddress);
-
+        console.log("==========  BIDD ==========");
+        require(listing.price != 0, "Item does not exist");
         require(!listing.isFixedPrice, "Item must have in auction");
+
+        console.log(Strings.toString(block.timestamp));
+        console.log(Strings.toString(listing.deadline));
+
+        console.log("==========  BIDDD ==========");
+
         require(block.timestamp <= listing.deadline, "Auction deadline has passed");
         require(msg.value > listing.price, "Bid must be higher than the current price");
 
@@ -278,15 +302,18 @@ function buyNFT(uint256 _listingId)
         listing.price = msg.value;
         listing.highestBidder = msg.sender;
 
-        emit Bid(nftId, listing.price, listing.highestBidder);
+        emit Bid(_listingId, listing.price, listing.highestBidder);
     }
 
     // Função para finalizar um leilão
-    function endAuction(uint256 nftId) public nonReentrant{
-        Listing storage listing = listings[nftId];
-        address sellerAddr = listingOwners[nftId]; 
+    // TODO: mudar para apenas ter acesso interno do contrato
+    function endAuction(uint256 _listingId) public nonReentrant{
+        Listing storage listing = listings[_listingId];
+        address sellerAddr = listingOwners[_listingId]; 
 
+        require(listing.price != 0, "Item does not exist");
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
+        require(msg.sender == address(this), "Only Marketplace contract can finish an auction");
 
         IERC721 nftContract = IERC721(listing.nftContractAddress);
     
@@ -296,25 +323,27 @@ function buyNFT(uint256 _listingId)
             "Seller must approve this contract."
         );
 
-        uint256 royaltyAmount = (listings[nftId].price * royaltyPercentage) / 10000;
-        uint256 platformFee = (listings[nftId].price * platformFeePercentage) / 10000;
-        uint256 sellerAmount = listings[nftId].price - royaltyAmount - platformFee;
+        uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
+        uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
+        uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
 
-        for (uint256 i = 0; i < listings[nftId].nftIds.length; i++) {
-            uint256 _nftId = listings[nftId].nftIds[i];
-            nftContract.transferFrom(listings[nftId].seller, msg.sender, _nftId);
-        }
-        
+
+        delete listings[_listingId];
+        delete listingOwners[_listingId];
+
         // Transfer payments
-        payable(listingOwners[nftId]).transfer(sellerAmount);
+        payable(sellerAddr).transfer(sellerAmount);
         payable(royaltyAddress).transfer(royaltyAmount);
         payable(platformFeeAddress).transfer(platformFee);
         
-        delete listings[nftId];
-        delete listingOwners[nftId];
+
+        for (uint256 i = 0; i < listing.nftIds.length; i++) {
+            uint256 _nftId = listing.nftIds[i];
+            nftContract.transferFrom(listing.seller, msg.sender , _nftId);
+        }
 
         // Emit event after transfers to ensure all went well
-        emit NFTSold(nftId, sellerAddr, listing.highestBidder, listing.highestBid);           
+        emit NFTSold(_listingId, sellerAddr, listing.highestBidder, listing.highestBid);           
     }
     
 
