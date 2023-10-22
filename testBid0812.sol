@@ -303,7 +303,8 @@ function buyNFT(uint256 _listingId)
 
         require(listing.price != 0, "Item does not exist");
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
-        require(msg.sender == address(this), "Only Marketplace contract can finish an auction");
+        //require(msg.sender == address(this), "Only Marketplace contract can finish an auction");
+        require(listing.highestBid != 0, "No Bid was made");
 
         IERC721 nftContract = IERC721(listing.nftContractAddress);
     
@@ -329,7 +330,7 @@ function buyNFT(uint256 _listingId)
 
         for (uint256 i = 0; i < listing.nftIds.length; i++) {
             uint256 _nftId = listing.nftIds[i];
-            nftContract.transferFrom(listing.seller, msg.sender , _nftId);
+            nftContract.transferFrom(listing.seller, listing.highestBidder, _nftId);
         }
 
         // Emit event after transfers to ensure all went well
