@@ -102,8 +102,6 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     uint256 _deadline,
     bool _isFixedPrice
 ) external whenNotPaused nonReentrant {
-    console.log("=============BORA=========");
-    console.log(address(this));
     
     require(_price > 0, "Price must be greater than zero.");
     require(_deadline > 0, "Deadline must be greater than zero.");
@@ -111,7 +109,6 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     IERC721 nftContract = IERC721(_nftContractAddress);
     for (uint256 i = 0; i < _nftIds.length; i++) {
         uint256 _nftId = _nftIds[i];
-        console.log("=============BORAA========= ", i);
         require(
             nftContract.ownerOf(_nftId) == msg.sender,
             "You must own the NFT to list it."
@@ -273,17 +270,10 @@ function buyNFT(uint256 _listingId)
     // Função para dar um lance em um NFT que está em leilão
     function bidNFT(uint256 _listingId) external payable nonReentrant{
         Listing storage listing = listings[_listingId];
-        console.log("==========  BID ==========");
         IERC721 nftContract = IERC721(listing.nftContractAddress);
-        console.log("==========  BIDD ==========");
+
         require(listing.price != 0, "Item does not exist");
         require(!listing.isFixedPrice, "Item must have in auction");
-
-        console.log(Strings.toString(block.timestamp));
-        console.log(Strings.toString(listing.deadline));
-
-        console.log("==========  BIDDD ==========");
-
         require(block.timestamp <= listing.deadline, "Auction deadline has passed");
         require(msg.value > listing.price, "Bid must be higher than the current price");
 
