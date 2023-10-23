@@ -109,6 +109,7 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     IERC721 nftContract = IERC721(_nftContractAddress);
     for (uint256 i = 0; i < _nftIds.length; i++) {
         uint256 _nftId = _nftIds[i];
+        
         require(
             nftContract.ownerOf(_nftId) == msg.sender,
             "You must own the NFT to list it."
@@ -270,8 +271,9 @@ function buyNFT(uint256 _listingId)
     // Função para dar um lance em um NFT que está em leilão
     function bidNFT(uint256 _listingId) external payable nonReentrant{
         Listing storage listing = listings[_listingId];
+        
         IERC721 nftContract = IERC721(listing.nftContractAddress);
-
+        
         require(listing.price != 0, "Item does not exist");
         require(!listing.isFixedPrice, "Item must have in auction");
         require(block.timestamp <= listing.deadline, "Auction deadline has passed");
@@ -297,13 +299,14 @@ function buyNFT(uint256 _listingId)
 
     // Função para finalizar um leilão
     // TODO: mudar para apenas ter acesso interno do contrato
-    function endAuction(uint256 _listingId) public nonReentrant{
+    function endAuction(uint256 _listingId) public payable whenNotPaused nonReentrant{
         Listing storage listing = listings[_listingId];
-        address sellerAddr = listingOwners[_listingId]; 
+        uint256[] memory nftIds = listing.nftIds;
+        address sellerAddr = listingOwners[_listingId];
+        address highestBidder = listing.highestBidder;
 
         require(listing.price != 0, "Item does not exist");
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
-        //require(msg.sender == address(this), "Only Marketplace contract can finish an auction");
         require(listing.highestBid != 0, "No Bid was made");
 
         IERC721 nftContract = IERC721(listing.nftContractAddress);
@@ -316,26 +319,35 @@ function buyNFT(uint256 _listingId)
 
         uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
         uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
-        uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
-
+        uint256 sellerAmount = address(this).balance - royaltyAmount - platformFee;
+        uint256 sellerAmount2 = listing.price - royaltyAmount - platformFee;
 
         delete listings[_listingId];
         delete listingOwners[_listingId];
 
-        // Transfer payments
-        payable(sellerAddr).transfer(sellerAmount);
-        payable(royaltyAddress).transfer(royaltyAmount);
-        payable(platformFeeAddress).transfer(platformFee);
-        
+        console.log(Strings.toString(listing.nftIds.length));
+        console.log(Strings.toString(nftIds.length));
 
-        for (uint256 i = 0; i < listing.nftIds.length; i++) {
-            uint256 _nftId = listing.nftIds[i];
-            nftContract.transferFrom(listing.seller, listing.highestBidder, _nftId);
-        }
+        transferNFTs(nftIds, sellerAddr, highestBidder, nftContract);
+
+        // Transfer payments
+        payTo(payable(sellerAddr), sellerAmount);
+        payTo(payable(royaltyAddress), royaltyAmount);
+        payTo(payable(platformFeeAddress), platformFee);  
 
         // Emit event after transfers to ensure all went well
         emit NFTSold(_listingId, sellerAddr, listing.highestBidder, listing.highestBid);           
     }
-    
 
+    function payTo(address payable _to, uint256 amount) public payable {
+        (bool sent, ) = _to.call{value: amount}("");
+        require(sent, "Failed to send Ether");
+    }
+
+    function transferNFTs(uint256[] memory nftIds, address seller, address to, IERC721 nftContract) private {
+        for (uint256 i = 0; i < nftIds.length; i++) {
+            uint256 _nftId = nftIds[i];
+            nftContract.transferFrom(seller, to, _nftId);
+        }
+    }
 }
