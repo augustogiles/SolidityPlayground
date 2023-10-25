@@ -101,105 +101,100 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     uint256 _price,
     uint256 _deadline,
     bool _isFixedPrice
-) external whenNotPaused nonReentrant {
-    
-    require(_price > 0, "Price must be greater than zero.");
-    require(_deadline > 0, "Deadline must be greater than zero.");
-    require(_nftIds.length > 0, "Must list at least one NFT.");
-    IERC721 nftContract = IERC721(_nftContractAddress);
-    for (uint256 i = 0; i < _nftIds.length; i++) {
-        uint256 _nftId = _nftIds[i];
+    ) external whenNotPaused nonReentrant {
         
-        require(
-            nftContract.ownerOf(_nftId) == msg.sender,
-            "You must own the NFT to list it."
+        require(_price > 0, "Price must be greater than zero.");
+        require(_deadline > 0, "Deadline must be greater than zero.");
+        require(_nftIds.length > 0, "Must list at least one NFT.");
+        IERC721 nftContract = IERC721(_nftContractAddress);
+        for (uint256 i = 0; i < _nftIds.length; i++) {
+            uint256 _nftId = _nftIds[i];
+            
+            require(
+                nftContract.ownerOf(_nftId) == msg.sender,
+                "You must own the NFT to list it."
+            );
+
+            require(
+                nftContract.isApprovedForAll(msg.sender, address(this)),
+                "NFT must be approved to market"
+            );
+            
+            // Aprovar este contrato para transferir o NFT em nome do vendedor
+            //nftContract.approve(address(this), _nftId);
+        }
+        listings[nextListingId] = Listing({
+            nftContractAddress: _nftContractAddress,
+            nftIds: _nftIds,
+            seller: msg.sender,
+            price: _price,
+            deadline: block.timestamp + _deadline,
+            isFixedPrice: _isFixedPrice,
+            isListed: true,
+            highestBidder: address(0),
+            highestBid: 0
+        });
+        listingOwners[nextListingId] = msg.sender;
+        activeListingIds.push(nextListingId);
+
+        emit NFTListed(
+            nextListingId,
+            msg.sender,
+            _nftContractAddress,
+            _nftIds,
+            _price,
+            block.timestamp + _deadline,
+            _isFixedPrice
         );
 
+        nextListingId++;
+        
+    }
+
+    function buyNFT(uint256 _listingId)
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+    {
+        require(msg.value > 0, "Sent value must be greater than zero.");
+        Listing storage listing = listings[_listingId];
+        require(listing.seller != address(0), "Listing does not exist.");
+        require(listing.isFixedPrice, "This item is in auction.");
         require(
-            nftContract.isApprovedForAll(msg.sender, address(this)),
-            "NFT must be approved to market"
+            block.timestamp <= listing.deadline,
+            "This listing has expired."
+        );
+        require(
+            msg.value == listing.price,
+            "Sent value must be equal to the listing price."
         );
         
-        // Aprovar este contrato para transferir o NFT em nome do vendedor
-        //nftContract.approve(address(this), _nftId);
+        IERC721 nftContract = IERC721(listing.nftContractAddress);
+        
+        // Check if seller has approved this contract
+        require(
+            nftContract.isApprovedForAll(listing.seller, address(this)),
+            "Seller must approve this contract."
+        );
+
+        uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
+        uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
+        uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
+
+        for (uint256 i = 0; i < listing.nftIds.length; i++) {
+            uint256 _nftId = listing.nftIds[i];
+            nftContract.transferFrom(listing.seller, msg.sender, _nftId);
+        }
+        
+        // Transfer payments
+        payable(listing.seller).transfer(sellerAmount);
+        payable(royaltyAddress).transfer(royaltyAmount);
+        payable(platformFeeAddress).transfer(platformFee);
+        
+        // Emit event after transfers to ensure all went well
+        emit NFTSold(_listingId, listing.seller, msg.sender, listing.price);
     }
-    listings[nextListingId] = Listing({
-        nftContractAddress: _nftContractAddress,
-        nftIds: _nftIds,
-        seller: msg.sender,
-        price: _price,
-        deadline: block.timestamp + _deadline,
-        isFixedPrice: _isFixedPrice,
-        isListed: true,
-        highestBidder: address(0),
-        highestBid: 0
-    });
-    listingOwners[nextListingId] = msg.sender;
-    activeListingIds.push(nextListingId);
-    
-    if(!_isFixedPrice){
-        listings[nextListingId].highestBidder = msg.sender;
-        listings[nextListingId].highestBid = _price;
-    }
-
-    emit NFTListed(
-        nextListingId,
-        msg.sender,
-        _nftContractAddress,
-        _nftIds,
-        _price,
-        block.timestamp + _deadline,
-        _isFixedPrice
-    );
-
-    nextListingId++;
-    
-}
-
-function buyNFT(uint256 _listingId)
-    external
-    payable
-    whenNotPaused
-    nonReentrant
-{
-    require(msg.value > 0, "Sent value must be greater than zero.");
-    Listing storage listing = listings[_listingId];
-    require(listing.seller != address(0), "Listing does not exist.");
-    require(listing.isFixedPrice, "This item is in auction.");
-    require(
-        block.timestamp <= listing.deadline,
-        "This listing has expired."
-    );
-    require(
-        msg.value == listing.price,
-        "Sent value must be equal to the listing price."
-    );
-    
-    IERC721 nftContract = IERC721(listing.nftContractAddress);
-    
-    // Check if seller has approved this contract
-    require(
-        nftContract.isApprovedForAll(listing.seller, address(this)),
-        "Seller must approve this contract."
-    );
-
-    uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
-    uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
-    uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
-
-    for (uint256 i = 0; i < listing.nftIds.length; i++) {
-        uint256 _nftId = listing.nftIds[i];
-        nftContract.transferFrom(listing.seller, msg.sender, _nftId);
-    }
-    
-    // Transfer payments
-    payable(listing.seller).transfer(sellerAmount);
-    payable(royaltyAddress).transfer(royaltyAmount);
-    payable(platformFeeAddress).transfer(platformFee);
-    
-    // Emit event after transfers to ensure all went well
-    emit NFTSold(_listingId, listing.seller, msg.sender, listing.price);
-}
 
 
     function cancelListing(uint256 _listingId) external nonReentrant {
@@ -277,7 +272,7 @@ function buyNFT(uint256 _listingId)
         require(listing.price != 0, "Item does not exist");
         require(!listing.isFixedPrice, "Item must have in auction");
         require(block.timestamp <= listing.deadline, "Auction deadline has passed");
-        require(msg.value > listing.price, "Bid must be higher than the current price");
+        require(msg.value > listing.highestBid, "Bid must be higher than the current price");
 
         // Check if seller has approved this contract
         require(
@@ -287,11 +282,11 @@ function buyNFT(uint256 _listingId)
 
         // Reembolsar o lance do licitante anterior
         if (listing.highestBidder != address(0)) {
-            payable(listing.highestBidder).transfer(listing.price);
+            payable(listing.highestBidder).transfer(listing.highestBid);
         }
 
         // Atualizar o lance mais alto e o licitante mais alto
-        listing.price = msg.value;
+        listing.highestBid = msg.value;
         listing.highestBidder = msg.sender;
 
         emit Bid(_listingId, listing.price, listing.highestBidder);
@@ -309,25 +304,19 @@ function buyNFT(uint256 _listingId)
         require(listing.deadline < block.timestamp, "Auction deadline has not passed");
         require(listing.highestBid != 0, "No Bid was made");
 
-        IERC721 nftContract = IERC721(listing.nftContractAddress);
-    
+        IERC721 nftContract = IERC721(listing.nftContractAddress);    
         // Check if seller has approved this contract
         require(
             nftContract.isApprovedForAll(listing.seller, address(this)),
             "Seller must approve this contract."
         );
 
-        uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
-        uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
-        uint256 sellerAmount = address(this).balance - royaltyAmount - platformFee;
-        uint256 sellerAmount2 = listing.price - royaltyAmount - platformFee;
+        uint256 royaltyAmount = (listing.highestBid * royaltyPercentage) / 10000;
+        uint256 platformFee = (listing.highestBid * platformFeePercentage) / 10000;
+        uint256 sellerAmount = listing.highestBid - royaltyAmount - platformFee;
 
         delete listings[_listingId];
         delete listingOwners[_listingId];
-
-        console.log(Strings.toString(listing.nftIds.length));
-        console.log(Strings.toString(nftIds.length));
-
         transferNFTs(nftIds, sellerAddr, highestBidder, nftContract);
 
         // Transfer payments
