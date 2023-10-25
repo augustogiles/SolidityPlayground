@@ -280,6 +280,11 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
             "Seller must approve this contract."
         );
 
+        // Atualizar o prazo se o tempo for igual ou menor que 5 minutos
+//        if (block.timestamp + 300 >= listing.deadline) {
+//            listing.deadline = block.timestamp + 300;
+//        }
+
         // Reembolsar o lance do licitante anterior
         if (listing.highestBidder != address(0)) {
             payable(listing.highestBidder).transfer(listing.highestBid);
@@ -315,6 +320,7 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
         uint256 platformFee = (listing.highestBid * platformFeePercentage) / 10000;
         uint256 sellerAmount = listing.highestBid - royaltyAmount - platformFee;
 
+
         delete listings[_listingId];
         delete listingOwners[_listingId];
         transferNFTs(nftIds, sellerAddr, highestBidder, nftContract);
@@ -328,7 +334,7 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
         emit NFTSold(_listingId, sellerAddr, listing.highestBidder, listing.highestBid);           
     }
 
-    function payTo(address payable _to, uint256 amount) public payable {
+    function payTo(address payable _to, uint256 amount) private {
         (bool sent, ) = _to.call{value: amount}("");
         require(sent, "Failed to send Ether");
     }
