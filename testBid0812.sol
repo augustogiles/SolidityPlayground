@@ -9,12 +9,16 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/release-v4.9
 
 
 contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
+    enum ListingAction{ ADD, REMOVE }
+
+
     struct Listing {
         address nftContractAddress;
         uint256[] nftIds;  // Array of NFT IDs in the pack
         address seller;
         uint256 price;
         uint256 deadline;
+        uint256 incrementDeadline;
         bool isFixedPrice;
         bool isListed;
         address highestBidder;
@@ -36,6 +40,8 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     uint256 public platformFeePercentage;
     address public royaltyAddress;
     address public platformFeeAddress;
+    
+    mapping(uint256 => uint256[]) private nftsListedByOwner;
 
     mapping(uint256 => Listing) public listings;
     mapping(uint256 => address) public listingOwners;
@@ -100,6 +106,7 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
     uint256[] memory _nftIds,
     uint256 _price,
     uint256 _deadline,
+    uint256 _incrementDeadline,
     bool _isFixedPrice
     ) external whenNotPaused nonReentrant {
         
@@ -117,26 +124,33 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
 
             require(
                 nftContract.isApprovedForAll(msg.sender, address(this)),
-                "NFT must be approved to market"
+                "NFT must be approved to market."
             );
-            
-            // Aprovar este contrato para transferir o NFT em nome do vendedor
-            //nftContract.approve(address(this), _nftId);
+
+            require(
+                getListWhereNftListed(_nftId, _nftContractAddress, msg.sender).length == 0,
+                "One or more of your NFTs are already listed."
+            );
         }
+        
+
         listings[nextListingId] = Listing({
             nftContractAddress: _nftContractAddress,
             nftIds: _nftIds,
             seller: msg.sender,
             price: _price,
             deadline: block.timestamp + _deadline,
+            incrementDeadline: _incrementDeadline,
             isFixedPrice: _isFixedPrice,
             isListed: true,
             highestBidder: address(0),
             highestBid: 0
         });
+        
         listingOwners[nextListingId] = msg.sender;
         activeListingIds.push(nextListingId);
-
+        setTokenLocation(_nftIds, _nftContractAddress, msg.sender, nextListingId, ListingAction.ADD);
+        
         emit NFTListed(
             nextListingId,
             msg.sender,
@@ -178,22 +192,29 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
             "Seller must approve this contract."
         );
 
-        uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
-        uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
-        uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
+        if (isSameOwner(listing.seller, nftContract, listing.nftIds)){
 
-        for (uint256 i = 0; i < listing.nftIds.length; i++) {
-            uint256 _nftId = listing.nftIds[i];
-            nftContract.transferFrom(listing.seller, msg.sender, _nftId);
+            uint256 royaltyAmount = (listing.price * royaltyPercentage) / 10000;
+            uint256 platformFee = (listing.price * platformFeePercentage) / 10000;
+            uint256 sellerAmount = listing.price - royaltyAmount - platformFee;
+
+            for (uint256 i = 0; i < listing.nftIds.length; i++) {
+                uint256 _nftId = listing.nftIds[i];
+                nftContract.transferFrom(listing.seller, msg.sender, _nftId);
+            }
+            
+            // Transfer payments
+            payable(listing.seller).transfer(sellerAmount);
+            payable(royaltyAddress).transfer(royaltyAmount);
+            payable(platformFeeAddress).transfer(platformFee);
+
+            setTokenLocation(listing.nftIds, listing.nftContractAddress, msg.sender, nextListingId, ListingAction.REMOVE);
+            
+            // Emit event after transfers to ensure all went well
+            emit NFTSold(_listingId, listing.seller, msg.sender, listing.price);
+        } else {
+            emit NFTDelisted(_listingId);
         }
-        
-        // Transfer payments
-        payable(listing.seller).transfer(sellerAmount);
-        payable(royaltyAddress).transfer(royaltyAmount);
-        payable(platformFeeAddress).transfer(platformFee);
-        
-        // Emit event after transfers to ensure all went well
-        emit NFTSold(_listingId, listing.seller, msg.sender, listing.price);
     }
 
 
@@ -202,6 +223,9 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
             listingOwners[_listingId] == msg.sender,
             "Only the listing owner can cancel it."
         );
+        Listing memory listing = listings[_listingId];
+        setTokenLocation(listing.nftIds, listing.nftContractAddress, msg.sender, nextListingId, ListingAction.REMOVE);
+
         delete listings[_listingId];
         delete listingOwners[_listingId];
         emit NFTDelisted(_listingId);
@@ -281,9 +305,9 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
         );
 
         // Atualizar o prazo se o tempo for igual ou menor que 5 minutos
-//        if (block.timestamp + 300 >= listing.deadline) {
-//            listing.deadline = block.timestamp + 300;
-//        }
+        if (block.timestamp + listing.incrementDeadline >= listing.deadline) {
+            listing.deadline = block.timestamp + listing.incrementDeadline;
+        }
 
         // Reembolsar o lance do licitante anterior
         if (listing.highestBidder != address(0)) {
@@ -323,15 +347,71 @@ contract GotaMktplace is Ownable, ReentrancyGuard, Pausable {
 
         delete listings[_listingId];
         delete listingOwners[_listingId];
-        transferNFTs(nftIds, sellerAddr, highestBidder, nftContract);
+        
 
-        // Transfer payments
-        payTo(payable(sellerAddr), sellerAmount);
-        payTo(payable(royaltyAddress), royaltyAmount);
-        payTo(payable(platformFeeAddress), platformFee);  
+        if (isSameOwner(sellerAddr, nftContract, nftIds)){
+            transferNFTs(nftIds, sellerAddr, highestBidder, nftContract);
+            // Transfer payments
+            payTo(payable(sellerAddr), sellerAmount);
+            payTo(payable(royaltyAddress), royaltyAmount);
+            payTo(payable(platformFeeAddress), platformFee);  
 
-        // Emit event after transfers to ensure all went well
-        emit NFTSold(_listingId, sellerAddr, listing.highestBidder, listing.highestBid);           
+            setTokenLocation(listing.nftIds, listing.nftContractAddress, msg.sender, nextListingId, ListingAction.ADD);
+
+            // Emit event after transfers to ensure all went well
+            emit NFTSold(_listingId, sellerAddr, listing.highestBidder, listing.highestBid);  
+        } else {
+            //refund the highestBidder and emit NFTDelisted
+            setTokenLocation(listing.nftIds, listing.nftContractAddress, msg.sender, nextListingId, ListingAction.REMOVE);
+            delete listings[_listingId];
+            delete listingOwners[_listingId];
+
+            payTo(payable(highestBidder), sellerAmount);
+            emit NFTDelisted(_listingId);
+        }
+    }
+
+    function setTokenLocation(uint256[] memory _nftIds, address _nftContractAddress, address ownerAddr, uint256 listingId, ListingAction action) private {
+        for (uint256 i = 0; i < _nftIds.length; i++) {
+            uint256 _nftId = _nftIds[i];
+            uint256 hash = createHashListingtoMap(_nftId, _nftContractAddress, ownerAddr);
+
+            if (action == ListingAction.ADD) {
+                nftsListedByOwner[hash].push(listingId);
+            } else if (action == ListingAction.REMOVE) {
+                delete nftsListedByOwner[hash];
+            }
+            
+        }
+    }
+
+    function createHashListingtoMap(uint256 _nftId, address _nftContractAddress, address ownerAddr) private pure returns (uint256){
+        return uint256(keccak256(abi.encodePacked(_nftId, _nftContractAddress, ownerAddr)));
+    }
+
+    function getListWhereNftListed(uint256 _nftId, address _nftContractAddress, address ownerAddr) public returns (uint256[] memory) {
+        uint256 hash = createHashListingtoMap(_nftId, _nftContractAddress, ownerAddr);
+        uint256[] storage listIds = nftsListedByOwner[hash];
+        if (listIds.length == 1 && listings[listIds[0]].deadline < block.timestamp){
+            delete listings[listIds[0]];
+            listIds.pop();
+
+            nftsListedByOwner[hash] = listIds;
+        }
+        return listIds;
+    }
+
+    function isSameOwner(address originalSeller, IERC721 nftContract, uint256[] memory nftIds) private view returns (bool){
+        address nftOwner = address(0);
+        for (uint256 i = 0; i < nftIds.length; i++) {
+            uint256 _nftId = nftIds[i];
+            nftOwner = nftContract.ownerOf(_nftId);
+            if(nftOwner != originalSeller){
+                return false;
+            }
+        }
+
+        return true;
     }
 
     function payTo(address payable _to, uint256 amount) private {
