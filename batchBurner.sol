@@ -15,14 +15,7 @@ contract BatchBurner {
 
   constructor() {}
 
-  modifier lock() {
-    require(!locked, "Contract is already locked");
-    locked = true;
-    _;
-    locked = false;
-  }
-
-  function batchBurn(uint256[] memory tokenIds, address _nftContractAddress) external lock {
+  function batchBurn(uint256[] memory tokenIds, address _nftContractAddress) external {
     IERC721 nftContract = IERC721(_nftContractAddress);
 
     // Check to make sure that the user who is calling the function is authorized to burn NFTs on the contract.
